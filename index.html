@@ -1293,13 +1293,13 @@ function cmpTxt(d){
 
 /* ════════ UF DEL DÍA (se consulta sola al abrir) ════════ */
 let ufManual = false;
-const UF_REF = 41065;                         // valor de respaldo (1-oct-2026) si no hay conexión ni valor guardado
+const UF_REF = 41065;                         // respaldo (1-oct-2026) si no hay conexión ni valor guardado
 const hoyChile = () => new Date().toLocaleDateString('en-CA',{timeZone:'America/Santiago'});   // YYYY-MM-DD
 const fechaCL  = iso => { const [y,m,d]=iso.split('-'); return d+'-'+m+'-'+y; };
 const fmtUF = v => v.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2});
 async function getJSON(url, ms){
   const ctl = (typeof AbortController!=='undefined') ? new AbortController() : null;
-  const to = ctl ? setTimeout(()=>ctl.abort(), ms||7000) : null;
+  const to = ctl ? setTimeout(()=>ctl.abort(), ms||15000) : null;
   try{ const r = await fetch(url, ctl?{signal:ctl.signal}:undefined); if(!r.ok) throw new Error('HTTP '+r.status); return await r.json(); }
   finally{ if(to) clearTimeout(to); }
 }
@@ -1310,32 +1310,29 @@ function ufEdit(){
 }
 async function cargarUF(){
   const st=g('ufStatus'), hoy=hoyChile();
-  st.textContent='Consultando la UF del día…';
+  let cache=null; try{ cache=JSON.parse(localStorage.getItem('uf_cache')||'null'); }catch(e){}
+  const hayCache = cache && cache.v>0;
+  // 1) mostrar al tiro el último valor guardado mientras se consulta el del día
+  if (hayCache){ g('uf').value=Math.round(cache.v*100)/100; st.innerHTML=`UF guardada del ${fechaCL(cache.f)}: <b>$${fmtUF(cache.v)}</b> · actualizando…`; rcCmp(); }
+  else st.textContent='Consultando la UF del día…';
   const aplicar=(v,fechaISO,nota)=>{
     g('uf').value=Math.round(v*100)/100; ufManual=false;
     st.innerHTML=`✅ UF del ${fechaCL(fechaISO)}: <b>$${fmtUF(v)}</b> · ${nota}`;
     try{ localStorage.setItem('uf_cache',JSON.stringify({f:fechaISO,v})); }catch(e){}
     rcCmp();
   };
-  try{                                          // 1) valor exacto de hoy
-    const [y,m,d]=hoy.split('-');
-    const j=await getJSON('https://mindicador.cl/api/uf/'+d+'-'+m+'-'+y);
-    const it=j && j.serie && j.serie[0];
-    if(it && it.valor>0){ aplicar(it.valor,hoy,'fuente mindicador.cl (Banco Central) · se actualiza sola al abrir'); return; }
-    throw new Error('sin dato de hoy');
-  }catch(e1){
-    try{                                        // 2) lista del mes: último día publicado hasta hoy
-      const j=await getJSON('https://mindicador.cl/api/uf');
-      const ok=(j.serie||[]).filter(x=>x.valor>0 && String(x.fecha).slice(0,10)<=hoy).sort((a,b)=>String(b.fecha).localeCompare(String(a.fecha)));
-      if(ok.length){ const f=String(ok[0].fecha).slice(0,10); aplicar(ok[0].valor,f,'fuente mindicador.cl (Banco Central)'); return; }
-      throw new Error('lista vacía');
-    }catch(e2){                                 // 3) último valor guardado, o referencial
-      let c=null; try{ c=JSON.parse(localStorage.getItem('uf_cache')||'null'); }catch(e){}
-      if(c && c.v>0){ g('uf').value=Math.round(c.v*100)/100; st.innerHTML=`⚠ Sin conexión con el servicio de la UF: se usa el último valor guardado ($${fmtUF(c.v)} del ${fechaCL(c.f)}). Puedes ingresarla a mano.`; }
-      else { g('uf').value=UF_REF; st.innerHTML=`⚠ Sin conexión con el servicio de la UF: valor referencial $${fmtUF(UF_REF)} (1-oct-2026). Ingrésala a mano.`; }
-      rcCmp();
-    }
+  const [y,m,d]=hoy.split('-');
+  const intentos=[
+    async()=>{ const j=await getJSON('https://mindicador.cl/api/uf/'+d+'-'+m+'-'+y,15000); const it=j&&j.serie&&j.serie[0]; if(it&&it.valor>0) return {v:it.valor,f:hoy}; throw new Error('sin dato de hoy'); },
+    async()=>{ const j=await getJSON('https://mindicador.cl/api/uf',15000); const ok=(j.serie||[]).filter(x=>x.valor>0&&String(x.fecha).slice(0,10)<=hoy).sort((a,b)=>String(b.fecha).localeCompare(String(a.fecha))); if(ok.length) return {v:ok[0].valor,f:String(ok[0].fecha).slice(0,10)}; throw new Error('lista vacía'); },
+    async()=>{ await new Promise(r=>setTimeout(r,3000)); const j=await getJSON('https://mindicador.cl/api/uf/'+d+'-'+m+'-'+y,15000); const it=j&&j.serie&&j.serie[0]; if(it&&it.valor>0) return {v:it.valor,f:hoy}; throw new Error('sin dato de hoy'); }
+  ];
+  for (const f of intentos){
+    try{ const r=await f(); if (ufManual) return; aplicar(r.v,r.f,'fuente mindicador.cl (Banco Central) · se actualiza sola al abrir'); return; }catch(e){}
   }
+  if (ufManual) return;
+  if (hayCache){ st.innerHTML=`⚠ No se pudo consultar la UF de hoy: se usa el último valor guardado ($${fmtUF(cache.v)} del ${fechaCL(cache.f)}). Puedes ingresarla a mano.`; }
+  else { g('uf').value=UF_REF; st.innerHTML=`⚠ No se pudo consultar la UF de hoy: valor referencial $${fmtUF(UF_REF)} (1-oct-2026). Ingrésala a mano.`; rcCmp(); }
 }
 
 /* ════════════════════════════════════════
